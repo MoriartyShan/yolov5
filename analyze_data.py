@@ -79,13 +79,14 @@ def showImages(dataset, src = '/home/moriarty/Datasets/coco/train2017', dst = '/
   @dataset:[[id, file_name, height, width, area, [segmentation]], ...,]
   '''
   for sample in dataset:
-    img_path = os.path.join(src, sample[1])
+    sample = Sample(sample)
+    img_path = os.path.join(src, sample.file_name())
     image = cv2.imread(img_path, cv2.IMREAD_COLOR)
-    image = draw(sample[5:], image)
-    img_path = os.path.join(dst, sample[1])
+    image = draw(sample.segmentation(), image)
+    img_path = os.path.join(dst, sample.file_name())
 
-    cv2.circle(image, np.array(sample[5:7], dtype=np.int32), 5, (255, 0, 0), thickness=-1)
-    print("draw circle position %s" %str(sample[5:7]))
+    cv2.circle(image, np.array(sample.segmentation()[0:2], dtype=np.int32), 5, (255, 0, 0), thickness=-1)
+    print("draw circle position %s" %str(sample.segmentation()[0:2]))
 
     cv2.imwrite(img_path, image)
 
@@ -96,20 +97,21 @@ def filter(dataset:list):
   ndataset = []
   area_threshold = 0.1
   edge = 10
-  for sample in dataset:
+  for _ in dataset:
     #area ratio
-    img_area = sample[2] * sample[3]
-    ratio = sample[4] / img_area
+    sample = Sample(_)
+    shape = sample.image_size()
+    img_area = shape[0] * shape[1]
+    ratio = sample.segment_area() / img_area
     if (ratio < area_threshold):
       continue
 
     #do not too close to edge of image
-    segmentation = np.array(sample[5:]).reshape(-1, 2)
-    num_poly = segmentation.shape[0]
-    invalid = (segmentation[:, 0] < edge) | (segmentation[:, 0] > (sample[3] - edge)) | (segmentation[:, 1] < edge) | (segmentation[:, 0] > (sample[2] - edge))
+    segmentation = np.array(sample.segmentation()).reshape(-1, 2)
+    invalid = (segmentation[:, 0] < edge) | (segmentation[:, 0] > (shape[0] - edge)) | (segmentation[:, 1] < edge) | (segmentation[:, 0] > (shape[1] - edge))
     if (np.sum(invalid) > 2):
       continue
-    ndataset.append(sample)
+    ndataset.append(_)
 
   return ndataset
 
@@ -232,7 +234,39 @@ def test(coco_train):
   print("return filtered type ", type(filtered))
   return filtered
 
+def train(data_loader, ):
+  pass
+
 def main():
+  default_type = torch.float32
+  device = torch.device("cuda:0")
+  dataset_path = '/home/moriarty/Projects/yolov5/x.csv'
+  image_path = '/home/moriarty/Datasets/coco/train2017'
+  dataset = loadDataset(dataset_path)
+  dataset = filter(dataset)
+  dataset = Dataset(dataset, image_path)
+  size = len(dataset)
+  train_size = int(0.9 * size)
+
+  loader = torch.utils.data.DataLoader(
+    dataset,
+    batch_size=1,
+    shuffle=False,
+    sampler=None,
+    batch_sampler=None,
+    num_workers=0,
+    collate_fn=None,
+    pin_memory=False,
+    drop_last=False,
+    timeout=0,
+    worker_init_fn=None,
+    prefetch_factor=2,
+    persistent_workers=False)
+  trloader, teloader = torch.utils.data.random_split(dataset, [train_size, size - train_size], generator=torch.Generator().manual_seed(42))
+
+
+
+def test_origin():
   ann_train_file='/home/moriarty/Datasets/coco/annotations/instances_train2017.json'
   print("coco train file reading")
   coco_train = COCO(ann_train_file)
