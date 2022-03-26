@@ -12,6 +12,7 @@ import copy
 import time
 import csv
 import torch
+import models.common as mc
 
 class Sample:
   def __init__(self, data:list):
@@ -28,6 +29,46 @@ class Sample:
     return self.data[4]
   def segmentation(self):
     return self.data[5:]
+  def create_label(self, _new_size, root):
+    path = os.path.join(root, self.file_name())
+    image = cv2.imread(path, cv2.IMREAD_COLOR)
+
+    old_size = np.array(self.image_size())
+    new_size = np.array(_new_size)
+
+    segmentation = np.array(self.segmentation()).reshape(-1, 2)
+
+    #resize
+    scale = new_size / old_size
+    if (scale[0] < scale[1]):
+      scale[1] = scale[0]
+    else:
+      scale[0] = scale[1]
+    size = (scale[0] * old_size.astype(scale.dtype)).astype(np.int32)
+
+    segmentation *= scale[0]
+    print("resize image from, ", old_size, "=>", size, image.shape, self.file_name())
+    _image = cv2.resize(image, (size[0], size[1]), interpolation=cv2.INTER_LINEAR)
+
+    current_center = size / 2
+    to_center = new_size / 2
+    translate = (to_center - current_center).astype(np.int32)
+    print("current_center,", current_center, ",to_center,", to_center, 'translate', translate)
+
+    segmentation += translate
+
+    image = np.zeros((_new_size[1], _new_size[0], 3), dtype=np.float32)
+    print('_image.shape ', _image.shape, image.shape)
+    image[translate[1]:(translate[1] + _image.shape[0]), translate[0]:(translate[0] + _image.shape[1]), :] = _image
+
+    label = np.zeros(image.shape[0:2], dtype=np.uint8)
+    fillPoly(segmentation, label, color=(1.0, 1.0, 1.0))
+
+    # _image = image.copy()
+    # fillPoly(segmentation, _image, color=(1.0, 1.0, 1.0))
+
+    image = (image.astype(dtype=np.float32).transpose(2, 0, 1) / (255.0 / 2)) - 1.0
+    return image, label, _image
 
 
 def draw(polygon, image, color=(0, 0, 255)):
@@ -55,6 +96,7 @@ def fillPoly(polygon, image, color=(1, 1, 1)):
 
 class Dataset(torch.utils.data.Dataset):
   def __init__(self, dataset:list, path_to_image:str):
+    self.image_size = (640, 640)
     self.path = copy.deepcopy(path_to_image)
     self.dataset = {}
     self.size = len(dataset)
@@ -64,15 +106,11 @@ class Dataset(torch.utils.data.Dataset):
     return self.size
   def __getitem__(self, idx):
     item = Sample(self.dataset[idx])
-    path = os.path.join(self.path, item.file_name())
-    image = cv2.imread(path, cv2.IMREAD_COLOR)
-    lable = np.zeros(image.shape[0:2], dtype=np.uint8)
-    fillPoly(item.segmentation(), lable, color=(1.0, 1.0, 1.0))
 
-    image = (image.astype(dtype=np.float32) / 255.0 * 2) - 1.0
-    lable = lable.astype(dtype=np.float32)
+    image, label = item.create_label(self.image_size, self.path)
 
-    return [image, lable]
+
+    return [image, label]
 
 def showImages(dataset, src = '/home/moriarty/Datasets/coco/train2017', dst = '/home/moriarty/Datasets/coco/draw'):
   '''
@@ -234,8 +272,52 @@ def test(coco_train):
   print("return filtered type ", type(filtered))
   return filtered
 
-def train(data_loader, ):
-  pass
+def train(model:torch.nn.Module, data_loader:torch.utils.data.DataLoader, optimizer,
+          compute_loss, epoch, device):
+  size = len(data_loader) / data_loader.batch_size
+  show_count = (size - 1) // 10
+  show_count = 1 if (show_count == 0) else show_count
+  show_count = 100 if (show_count > 100) else show_count
+  total_loss = 0.0
+
+  model.train()
+  epoch_begin = time.time()
+  for index, batch_data in enumerate(data_loader):
+    image = batch_data[0].to(device)
+    label = batch_data[1].to(device)
+
+    optimizer.zero_grad()
+    output = model(image)
+    loss = compute_loss(output, label)
+    total_loss += loss.data
+
+    loss.backward()
+    optimizer.step()
+    if ((index % show_count) == 0):
+      cost = time.time() - epoch_begin
+      print('train %d in ep %d %0.2f%%, %f, %f, %f sec, left %f sec' % (
+        index, epoch, 100.0 * index / size, total_loss / index, loss.data,
+        cost, cost / index * (size - index)))
+  cost = time.time() - epoch_begin
+  print('epoch %d finished, trained %d samples, average loss %f, cost time %f sec' % (
+    epoch, size, total_loss / index, cost))
+  return total_loss / size, cost
+
+
+
+class Model(torch.nn.Module):
+  def __init__(self):
+    super().__init__()
+    self.channels = [3, 8, 16, 32, 1]
+    self.kernels = [7, 5, 3, 3]
+    convs = []
+    num = len(self.kernels)
+    for i in range(num):
+      convs.append(mc.Conv(self.channels[i], self.channels[i+1], self.kernels[i]))
+    self.conv = torch.nn.Sequential(*convs)
+  def forward(self, x):
+    return self.conv(x)
+
 
 def main():
   default_type = torch.float32
@@ -248,8 +330,17 @@ def main():
   size = len(dataset)
   train_size = int(0.9 * size)
 
-  loader = torch.utils.data.DataLoader(
+  model = Model()
+  model = model.to(device)
+  compute_loss = torch.nn.BCEWithLogitsLoss(reduction='mean')
+
+  trset, teset = torch.utils.data.random_split(
     dataset,
+    [train_size, size - train_size],
+    generator=torch.Generator().manual_seed(42))
+
+  trloader = torch.utils.data.DataLoader(
+    trset,
     batch_size=1,
     shuffle=False,
     sampler=None,
@@ -262,8 +353,32 @@ def main():
     worker_init_fn=None,
     prefetch_factor=2,
     persistent_workers=False)
-  trloader, teloader = torch.utils.data.random_split(dataset, [train_size, size - train_size], generator=torch.Generator().manual_seed(42))
 
+  teloader = torch.utils.data.DataLoader(
+    teset,
+    batch_size=1,
+    shuffle=False,
+    sampler=None,
+    batch_sampler=None,
+    num_workers=0,
+    collate_fn=None,
+    pin_memory=False,
+    drop_last=False,
+    timeout=0,
+    worker_init_fn=None,
+    prefetch_factor=2,
+    persistent_workers=False)
+
+  optimizer = torch.optim.Adam(model.parameters(), lr=0.001,
+                               betas=(0.9, 0.99))
+
+  for i in range(100):
+    train(model, trloader, optimizer, compute_loss, i, device)
+
+def load_dataset():
+  dataset = loadDataset('x.csv')
+  dataset = filter(dataset)
+  return dataset
 
 
 def test_origin():
