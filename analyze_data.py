@@ -47,18 +47,18 @@ class Sample:
     size = (scale[0] * old_size.astype(scale.dtype)).astype(np.int32)
 
     segmentation *= scale[0]
-    print("resize image from, ", old_size, "=>", size, image.shape, self.file_name())
+    # print("resize image from, ", old_size, "=>", size, image.shape, self.file_name())
     _image = cv2.resize(image, (size[0], size[1]), interpolation=cv2.INTER_LINEAR)
 
     current_center = size / 2
     to_center = new_size / 2
     translate = (to_center - current_center).astype(np.int32)
-    print("current_center,", current_center, ",to_center,", to_center, 'translate', translate)
+    # print("current_center,", current_center, ",to_center,", to_center, 'translate', translate)
 
     segmentation += translate
 
     image = np.zeros((_new_size[1], _new_size[0], 3), dtype=np.float32)
-    print('_image.shape ', _image.shape, image.shape)
+    # print('_image.shape ', _image.shape, image.shape)
     image[translate[1]:(translate[1] + _image.shape[0]), translate[0]:(translate[0] + _image.shape[1]), :] = _image
 
     label = np.zeros(image.shape[0:2], dtype=np.uint8)
@@ -68,7 +68,7 @@ class Sample:
     # fillPoly(segmentation, _image, color=(1.0, 1.0, 1.0))
 
     image = (image.astype(dtype=np.float32).transpose(2, 0, 1) / (255.0 / 2)) - 1.0
-    return image, label, _image
+    return image, np.expand_dims(label, axis=0).astype(np.float32)
 
 
 def draw(polygon, image, color=(0, 0, 255)):
@@ -274,7 +274,10 @@ def test(coco_train):
 
 def train(model:torch.nn.Module, data_loader:torch.utils.data.DataLoader, optimizer,
           compute_loss, epoch, device):
-  size = len(data_loader) / data_loader.batch_size
+  size = len(data_loader)
+
+  print("num of size %d" %(size))
+
   show_count = (size - 1) // 10
   show_count = 1 if (show_count == 0) else show_count
   show_count = 100 if (show_count > 100) else show_count
@@ -288,19 +291,25 @@ def train(model:torch.nn.Module, data_loader:torch.utils.data.DataLoader, optimi
 
     optimizer.zero_grad()
     output = model(image)
+
+    # print("shapes ", output.dtype, label.dtype)
     loss = compute_loss(output, label)
+
+
+
     total_loss += loss.data
 
     loss.backward()
     optimizer.step()
     if ((index % show_count) == 0):
+      num = index + 1
       cost = time.time() - epoch_begin
       print('train %d in ep %d %0.2f%%, %f, %f, %f sec, left %f sec' % (
-        index, epoch, 100.0 * index / size, total_loss / index, loss.data,
-        cost, cost / index * (size - index)))
+        index, epoch, 100.0 * num / size, total_loss / num, loss.data,
+        cost, cost / num * (size - num)))
   cost = time.time() - epoch_begin
   print('epoch %d finished, trained %d samples, average loss %f, cost time %f sec' % (
-    epoch, size, total_loss / index, cost))
+    epoch, size, total_loss / size, cost))
   return total_loss / size, cost
 
 
@@ -330,6 +339,9 @@ def main():
   size = len(dataset)
   train_size = int(0.9 * size)
 
+  batch_size = 8
+  lr = 0.002
+
   model = Model()
   model = model.to(device)
   compute_loss = torch.nn.BCEWithLogitsLoss(reduction='mean')
@@ -341,39 +353,40 @@ def main():
 
   trloader = torch.utils.data.DataLoader(
     trset,
-    batch_size=1,
-    shuffle=False,
+    batch_size=batch_size,
+    shuffle=True,
     sampler=None,
     batch_sampler=None,
-    num_workers=0,
+    num_workers=4,
     collate_fn=None,
     pin_memory=False,
     drop_last=False,
     timeout=0,
     worker_init_fn=None,
-    prefetch_factor=2,
+    prefetch_factor=4,
     persistent_workers=False)
 
   teloader = torch.utils.data.DataLoader(
     teset,
-    batch_size=1,
+    batch_size=batch_size,
     shuffle=False,
     sampler=None,
     batch_sampler=None,
-    num_workers=0,
+    num_workers=4,
     collate_fn=None,
     pin_memory=False,
     drop_last=False,
     timeout=0,
     worker_init_fn=None,
-    prefetch_factor=2,
+    prefetch_factor=4,
     persistent_workers=False)
 
-  optimizer = torch.optim.Adam(model.parameters(), lr=0.001,
+  optimizer = torch.optim.Adam(model.parameters(), lr=lr,
                                betas=(0.9, 0.99))
 
   for i in range(100):
     train(model, trloader, optimizer, compute_loss, i, device)
+  torch.save(model, 'model.pt')
 
 def load_dataset():
   dataset = loadDataset('x.csv')
@@ -387,7 +400,7 @@ def test_origin():
   coco_train = COCO(ann_train_file)
   print("coco train file finish")
   return test(coco_train)
-# main()
+main()
 
 
 
