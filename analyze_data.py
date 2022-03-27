@@ -13,6 +13,7 @@ import time
 import csv
 import torch
 import models.common as mc
+import torchvision.models.segmentation as torch_segmentation
 
 def IOU(output, target):
   output = torch.sigmoid(output)
@@ -309,9 +310,14 @@ def train(model:torch.nn.Module, data_loader:torch.utils.data.DataLoader, optimi
 
     optimizer.zero_grad()
     output = model(image)
-
+    '''
+    print("output type %s" %(str(type(output))))
+    print("output type %s" % (str(type(output['out']))))
+    print("output: shape %s, type %s" %(str(output['out'].shape), str(output['out'].dtype)))
+    print("label: shape %s, type %s" % (str(label.shape), str(label.dtype)))
+    '''
     # print("shapes ", output.dtype, label.dtype)
-    bce, iou = compute_loss(output, label)
+    bce, iou = compute_loss(output['out'], label)
 
     total_iou += iou.data
     total_loss += bce.data
@@ -356,10 +362,11 @@ def main():
   size = len(dataset)
   train_size = int(0.9 * size)
 
-  batch_size = 8
+  batch_size = 7
   lr = 0.002
 
-  model = Model()
+  model = torch_segmentation.deeplabv3_resnet50(num_classes=1)
+  # model = Model()
   model = model.to(device)
   compute_loss = MultipleLoss()
 
@@ -376,8 +383,8 @@ def main():
     batch_sampler=None,
     num_workers=4,
     collate_fn=None,
-    pin_memory=False,
-    drop_last=False,
+    pin_memory=True,
+    drop_last=True,
     timeout=0,
     worker_init_fn=None,
     prefetch_factor=4,
@@ -386,13 +393,13 @@ def main():
   teloader = torch.utils.data.DataLoader(
     teset,
     batch_size=batch_size,
-    shuffle=False,
+    shuffle=True,
     sampler=None,
     batch_sampler=None,
     num_workers=4,
     collate_fn=None,
-    pin_memory=False,
-    drop_last=False,
+    pin_memory=True,
+    drop_last=True,
     timeout=0,
     worker_init_fn=None,
     prefetch_factor=4,
