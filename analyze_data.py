@@ -14,6 +14,24 @@ import csv
 import torch
 import models.common as mc
 
+def IOU(output, target):
+  output = torch.sigmoid(output)
+  output = output > 0.8
+  target = target > 0.8
+  intersection = output & target
+  union = output | target
+  return intersection.sum() / union.sum()
+
+class MultipleLoss:
+  def __init__(self):
+    self.BCE = torch.nn.BCELoss()
+    self.BCEWithLogitsLoss = torch.nn.BCEWithLogitsLoss()
+  def __call__(self, output, target):
+    bce = self.BCEWithLogitsLoss(output, target)
+    iou = IOU(output, target)
+    return bce, iou
+
+
 class Sample:
   def __init__(self, data:list):
     #@data: [id, file_name, height, width, area, [segmentation]]
@@ -96,7 +114,7 @@ def fillPoly(polygon, image, color=(1, 1, 1)):
 
 class Dataset(torch.utils.data.Dataset):
   def __init__(self, dataset:list, path_to_image:str):
-    self.image_size = (640, 640)
+    self.image_size = (320, 320)
     self.path = copy.deepcopy(path_to_image)
     self.dataset = {}
     self.size = len(dataset)
@@ -282,7 +300,7 @@ def train(model:torch.nn.Module, data_loader:torch.utils.data.DataLoader, optimi
   show_count = 1 if (show_count == 0) else show_count
   show_count = 100 if (show_count > 100) else show_count
   total_loss = 0.0
-
+  total_iou = 0.0
   model.train()
   epoch_begin = time.time()
   for index, batch_data in enumerate(data_loader):
@@ -293,32 +311,31 @@ def train(model:torch.nn.Module, data_loader:torch.utils.data.DataLoader, optimi
     output = model(image)
 
     # print("shapes ", output.dtype, label.dtype)
-    loss = compute_loss(output, label)
+    bce, iou = compute_loss(output, label)
 
+    total_iou += iou.data
+    total_loss += bce.data
 
-
-    total_loss += loss.data
-
-    loss.backward()
+    bce.backward()
     optimizer.step()
     if ((index % show_count) == 0):
       num = index + 1
       cost = time.time() - epoch_begin
-      print('train %d in ep %d %0.2f%%, %f, %f, %f sec, left %f sec' % (
-        index, epoch, 100.0 * num / size, total_loss / num, loss.data,
+      print('train %d in ep %d %0.2f%%, mean loss %f, current loss %f, mean iou %f, current iou %f, cost %f sec, left %f sec' % (
+        index, epoch, 100.0 * num / size, total_loss / num, bce.data, total_iou / num, iou.data,
         cost, cost / num * (size - num)))
   cost = time.time() - epoch_begin
-  print('epoch %d finished, trained %d samples, average loss %f, cost time %f sec' % (
-    epoch, size, total_loss / size, cost))
-  return total_loss / size, cost
+  print('epoch %d finished, trained %d samples, mean loss %f, mean iou %f, cost time %f sec' % (
+    epoch, size, total_loss / size, total_iou / size, cost))
+  return total_loss / size, total_iou / size, cost
 
 
 
 class Model(torch.nn.Module):
   def __init__(self):
     super().__init__()
-    self.channels = [3, 8, 16, 32, 1]
-    self.kernels = [7, 5, 3, 3]
+    self.channels = [3, 8, 16, 32, 64, 64, 1]
+    self.kernels = [7, 5, 3, 3, 3, 3]
     convs = []
     num = len(self.kernels)
     for i in range(num):
@@ -344,7 +361,7 @@ def main():
 
   model = Model()
   model = model.to(device)
-  compute_loss = torch.nn.BCEWithLogitsLoss(reduction='mean')
+  compute_loss = MultipleLoss()
 
   trset, teset = torch.utils.data.random_split(
     dataset,
